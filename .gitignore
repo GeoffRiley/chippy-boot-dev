@@ -34,3 +34,7 @@ go.work.sum
 
 do_migrate.sh
 
+
+chippy-boot-dev
+
+internal/database/
