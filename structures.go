@@ -13,6 +13,7 @@ type apiConfig struct {
 	db             *database.Queries
 	platform       string
 	jwtSecret      string
+	polkaKey       string
 }
 
 type User struct {
@@ -21,6 +22,7 @@ type User struct {
 	UpdatedAt      time.Time `json:"updated_at"`
 	Email          string    `json:"email"`
 	HashedPassword string    `json:"hashed_password"`
+	IsChirpyRed    bool      `json:"is_chirpy_red"`
 }
 
 type chirpRequest struct {

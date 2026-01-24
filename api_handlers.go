@@ -1,9 +1,12 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/GeoffRiley/chippy-boot-dev/internal/auth"
@@ -142,6 +145,62 @@ func (cfg *apiConfig) handlerUsersCreate(writer http.ResponseWriter, request *ht
 	})
 }
 
+func (cfg *apiConfig) handlerUsersUpdate(writer http.ResponseWriter, request *http.Request) {
+	type parameters struct {
+		Password string `json:"password"`
+		Email    string `json:"email"`
+	}
+	type response struct {
+		User
+	}
+
+	token, err := auth.GetBearerToken(request.Header)
+	if err != nil {
+		respondWithError(writer, http.StatusUnauthorized, "Couldn't find JWT", err)
+		return
+	}
+
+	userID, err := auth.ValidateJWT(token, cfg.jwtSecret)
+	if err != nil {
+		respondWithError(writer, http.StatusUnauthorized, "Couldn't validate JWT", err)
+		return
+	}
+
+	decoder := json.NewDecoder(request.Body)
+	params := parameters{}
+	err = decoder.Decode(&params)
+	if err != nil {
+		respondWithError(writer, http.StatusInternalServerError, "Couldn't decode parameters", err)
+		return
+	}
+
+	hashedPassword, err := auth.HashPassword(params.Password)
+	if err != nil {
+		respondWithError(writer, http.StatusInternalServerError, "Couldn't hash password", err)
+		return
+	}
+
+	user, err := cfg.db.UpdateUser(request.Context(), database.UpdateUserParams{
+		ID:             userID,
+		Email:          params.Email,
+		HashedPassword: hashedPassword,
+	})
+	if err != nil {
+		respondWithError(writer, http.StatusInternalServerError, "Couldn't update user", err)
+		return
+	}
+
+	respondWithJSON(writer, http.StatusOK, response{
+		User: User{
+			ID:          user.ID,
+			CreatedAt:   user.CreatedAt,
+			UpdatedAt:   user.UpdatedAt,
+			Email:       user.Email,
+			IsChirpyRed: user.IsChirpyRed,
+		},
+	})
+}
+
 func (cfg *apiConfig) handlerGetChirps(writer http.ResponseWriter, request *http.Request) {
 	dbChirps, err := cfg.db.GetChirps(request.Context())
 	if err != nil {
@@ -161,7 +220,54 @@ func (cfg *apiConfig) handlerGetChirps(writer http.ResponseWriter, request *http
 	}
 
 	respondWithJSON(writer, http.StatusOK, chirps)
+}
 
+func (cfg *apiConfig) handlerRetrieveChirps(writer http.ResponseWriter, request *http.Request) {
+	dbChirps, err := cfg.db.GetChirps(request.Context())
+	if err != nil {
+		respondWithError(writer, http.StatusInternalServerError, "Couldn't retrieve chirps", err)
+		return
+	}
+
+	authorID := uuid.Nil
+	authorIDString := request.URL.Query().Get("author_id")
+	if authorIDString != "" {
+		authorID, err = uuid.Parse(authorIDString)
+		if err != nil {
+			respondWithError(writer, http.StatusBadRequest, "Invalid author ID", err)
+			return
+		}
+	}
+
+	sortDirection := "asc"
+	sortDirectionParam := request.URL.Query().Get("sort")
+	if sortDirectionParam == "desc" {
+		sortDirection = "desc"
+	}
+
+	chirps := []Chirp{}
+	for _, dbChirp := range dbChirps {
+		if authorID != uuid.Nil && dbChirp.UserID != authorID {
+			continue
+		}
+
+		chirps = append(chirps, Chirp{
+			ID:        dbChirp.ID,
+			CreatedAt: dbChirp.CreatedAt,
+			UpdatedAt: dbChirp.UpdatedAt,
+			UserID:    dbChirp.UserID,
+			Body:      dbChirp.Body,
+		})
+	}
+
+	sort.Slice(chirps, func(i, j int) bool {
+		if sortDirection == "desc" {
+			return chirps[i].CreatedAt.After(chirps[j].CreatedAt)
+		}
+		return chirps[i].CreatedAt.Before(chirps[j].CreatedAt)
+	})
+
+	respondWithJSON(writer, http.StatusOK, chirps)
 }
 
 func (cfg *apiConfig) handlerGetChirp(writer http.ResponseWriter, request *http.Request) {
@@ -185,6 +291,44 @@ func (cfg *apiConfig) handlerGetChirp(writer http.ResponseWriter, request *http.
 		UserID:    dbChirp.UserID,
 		Body:      dbChirp.Body,
 	})
+}
+
+func (cfg *apiConfig) handlerDeleteChirp(writer http.ResponseWriter, request *http.Request) {
+	chirpIDString := request.PathValue("chirpID")
+	chirpID, err := uuid.Parse(chirpIDString)
+	if err != nil {
+		respondWithError(writer, http.StatusBadRequest, "Invalid chirp ID", err)
+		return
+	}
+
+	token, err := auth.GetBearerToken(request.Header)
+	if err != nil {
+		respondWithError(writer, http.StatusUnauthorized, "Couldn't find JWT", err)
+		return
+	}
+	userID, err := auth.ValidateJWT(token, cfg.jwtSecret)
+	if err != nil {
+		respondWithError(writer, http.StatusUnauthorized, "Couldn't validate JWT", err)
+		return
+	}
+
+	dbChirp, err := cfg.db.GetChirp(request.Context(), chirpID)
+	if err != nil {
+		respondWithError(writer, http.StatusNotFound, "Couldn't get chirp", err)
+		return
+	}
+	if dbChirp.UserID != userID {
+		respondWithError(writer, http.StatusForbidden, "You can't delete this chirp", err)
+		return
+	}
+
+	err = cfg.db.DeleteChirp(request.Context(), chirpID)
+	if err != nil {
+		respondWithError(writer, http.StatusInternalServerError, "Couldn't delete chirp", err)
+		return
+	}
+
+	writer.WriteHeader(http.StatusNoContent)
 }
 
 func (cfg *apiConfig) handlerLogin(writer http.ResponseWriter, request *http.Request) {
@@ -246,11 +390,11 @@ func (cfg *apiConfig) handlerLogin(writer http.ResponseWriter, request *http.Req
 
 	respondWithJSON(writer, http.StatusOK, response{
 		User: User{
-			ID:        user.ID,
-			CreatedAt: user.CreatedAt,
-			UpdatedAt: user.UpdatedAt,
-			Email:     user.Email,
-			//IsChirpyRed: user.IsChirpyRed,
+			ID:          user.ID,
+			CreatedAt:   user.CreatedAt,
+			UpdatedAt:   user.UpdatedAt,
+			Email:       user.Email,
+			IsChirpyRed: user.IsChirpyRed,
 		},
 		Token:        accessToken,
 		RefreshToken: refreshToken,
@@ -299,6 +443,50 @@ func (cfg *apiConfig) handlerRevoke(writer http.ResponseWriter, request *http.Re
 	_, err = cfg.db.RevokeRefreshToken(request.Context(), refreshToken)
 	if err != nil {
 		respondWithError(writer, http.StatusInternalServerError, "Couldn't revoke session", err)
+		return
+	}
+
+	writer.WriteHeader(http.StatusNoContent)
+}
+
+func (cfg *apiConfig) handlerWebhooks(writer http.ResponseWriter, request *http.Request) {
+	type parameters struct {
+		Event string `json:"event"`
+		Data  struct {
+			UserID uuid.UUID `json:"user_id"`
+		}
+	}
+
+	apiKey, err := auth.GetAPIKey(request.Header)
+	if err != nil {
+		respondWithError(writer, http.StatusUnauthorized, "Couldn't find api key", err)
+		return
+	}
+	if apiKey != cfg.polkaKey {
+		respondWithError(writer, http.StatusUnauthorized, "API key is invalid", err)
+		return
+	}
+
+	decoder := json.NewDecoder(request.Body)
+	params := parameters{}
+	err = decoder.Decode(&params)
+	if err != nil {
+		respondWithError(writer, http.StatusInternalServerError, "Couldn't decode parameters", err)
+		return
+	}
+
+	if params.Event != "user.upgraded" {
+		writer.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	_, err = cfg.db.UpgradeToChirpyRed(request.Context(), params.Data.UserID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			respondWithError(writer, http.StatusNotFound, "Couldn't find user", err)
+			return
+		}
+		respondWithError(writer, http.StatusInternalServerError, "Couldn't update user", err)
 		return
 	}
 

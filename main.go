@@ -27,6 +27,10 @@ func main() {
 	if jwtSecret == "" {
 		log.Fatal("JWT_SECRET environment variable is not set")
 	}
+	polkaKey := os.Getenv("POLKA_KEY")
+	if polkaKey == "" {
+		log.Fatal("POLKA_KEY environment variable is not set")
+	}
 	dbConn, err := sql.Open("postgres", dbURL)
 	if err != nil {
 		log.Fatalf("Error opening database: %s", err)
@@ -38,6 +42,7 @@ func main() {
 		db:             dbQueries,
 		platform:       platform,
 		jwtSecret:      jwtSecret,
+		polkaKey:       polkaKey,
 	}
 
 	mux := http.NewServeMux()
@@ -57,8 +62,12 @@ func main() {
 	mux.HandleFunc("POST /api/refresh", apiCfg.handlerRefresh)
 	mux.HandleFunc("POST /api/chirps", apiCfg.handlerPostChirps)
 	mux.HandleFunc("POST /api/users", apiCfg.handlerUsersCreate)
+	mux.HandleFunc("PUT /api/users", apiCfg.handlerUsersUpdate)
 	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.handlerGetChirp)
-	mux.HandleFunc("GET /api/chirps", apiCfg.handlerGetChirps)
+	mux.HandleFunc("DELETE /api/chirps/{chirpID}", apiCfg.handlerDeleteChirp)
+	mux.HandleFunc("GET /api/chirps", apiCfg.handlerRetrieveChirps)
+
+	mux.HandleFunc("POST /api/polka/webhooks", apiCfg.handlerWebhooks)
 
 	mux.HandleFunc("POST /admin/reset", apiCfg.handlerReset)
 	mux.HandleFunc("GET /admin/metrics", apiCfg.handlerMetrics)
